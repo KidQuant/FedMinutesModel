@@ -135,9 +135,9 @@ class FedMinScraper(object):
 
         for fname, txt in self.transcripts.items():
             with open(
-                os.path.join(self.save_path, fname + ".txt"), "w", encoding="utf-8"
+                os.path.join(self.save_path + ".txt"), "w", encoding="utf-8"
             ) as o:
-                o.write()
+                o.write(txt)
                 o.close()
 
 
