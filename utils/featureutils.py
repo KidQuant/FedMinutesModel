@@ -60,11 +60,9 @@ class FeatureProcessor(object):
         self.lda_topic_dict = lda_topic_dict
         self.batch_size = batch_size
 
-    def get_topics(self, batch):
-        """
-        Takes in a batch of stemmed tokens
-        returns topic distributions and argmax
-        """
+    def _get_topics(self, batch):
+        """Takes in a batch of stemeed tokens
+        returns topic distrubution and argmax"""
 
         bag_of_words = self.lda_vec.transform(batch)
         topic_dist = self.lda_model.transform(bag_of_words)
@@ -86,8 +84,6 @@ class FeatureProcessor(object):
 
         sent_pred = list(map(self.__class__.sent_dict.get, sent_pred))
 
-        return logits.tolist(), sent_pred
-
     def _get_model_output(self, sentiment, embedding, topic):
         """
         Loops through each batch
@@ -100,14 +96,14 @@ class FeatureProcessor(object):
             batch = self.corpus[i : i + self.batch_size]
 
             batch_size = len(batch)
-            logit = [None] * batch_size
+            logits = [None] * batch_size
             sent_pred = [None] * batch_size
             doc_embedding = [None] * batch_size
             topic_dist = [None] * batch_size
             topic_pred = [None] * batch_size
 
             feature_tensor = self.transformer_tokenizer(
-                [b.tokens for b in batch], **self.tokenizer_settings
+                [b.tokens for b in batch], **self.transformer_settings
             )
 
             with torch.no_grad():
@@ -119,20 +115,20 @@ class FeatureProcessor(object):
 
                 if embedding:
                     embedding_from_last = output.hidden_states[-1]
-                    attention_mask = features_tensor["attention_mask"]
+                    attention_mask = feature_tensor["attention_mask"]
                     doc_embedding = self._embedding_mean_pool(
                         embedding_from_last, attention_mask
                     )
 
-                    if topic:
-                        topic_dist, topic_pred = self._get_topics(batch=batch)
+                if topic:
+                    topic_dist, topic_pred = self._get_topics(batch=batch)
 
-                    yield (
-                        batch,
-                        (logits, sent_pred),
-                        (doc_embedding),
-                        (topic_dist, topic_pred),
-                    )
+                yield (
+                    batch,
+                    (logits, sent_pred),
+                    (doc_embedding),
+                    (topic_dist, topic_pred),
+                )
 
     def get_features(self, sentiment=True, embedding=True, topic=True):
         """
@@ -160,16 +156,86 @@ class FeatureProcessor(object):
             doc_embedding = embed_batch
             topic_dist, topic_pred = topic_batch
 
+            for n, doc in enumerate(batch):
+                batch_n = batch[n]
+                logit_n = logits[n]
+                sent_pred_n = sent_pred[n]
+                doc_embed_n = doc_embedding[n]
+                topic_dist_n = topic_dist[n]
+                topic_pred_n = topic_pred[n]
+
+                feature_dict = {
+                    "sentiment": {"logits": logit_n, "predictions": sent_pred_n},
+                    "embedding": doc_embed_n,
+                    "topics": {"topic_dist": topic_dist_n, "topic_pred": topic_pred_n},
+                }
+
+                batch_n.features = feature_dict
+                corpus.append(batch_n)
+
+        return Corpus(corpus)
+
+    @staticmethod
+    def _embedding_mean_pool(embedding_from_last, attention_mask):
+        """
+        Extract vector representation of token
+        """
+
+        mask = attention_mask.unsqueezed(-1).expand(embedding_from_last.shape).float()
+        mask_embeddings = embedding_from_last * mask
+        mean_embeddings = torch.sum(mask_embeddings, 1) / torch.clamp(
+            mask.sum(1), min=1e-8
+        )
+
+        if mean_embeddings.shape[0] == 1:
+            return mean_embeddings.tolist()
+        else:
+            return mean_embeddings.squeeze().tolist()
+
+    @staticmethod
+    def softmax(x):
+        e_x = np.exp(x - np.max(x, axis=1)[:, None])
+        return e_x / np.sum(e_x, axis=1)[:, None]
+
     def find_corpus_idx(corpus):
         """
         Extract file_ids positional index in corpus
         """
+
         ids = [(n, f.category_id, f.file_id) for n, f in enumerate(corpus)]
         df_ids = pd.DataFrame(ids, columns=["idx", "category_id", "file_id"])
         start_idx = df_ids.drop_duplicates(["category_id", "file_id"], keep="first")
         end_idx = df_ids.drop_duplicates(["category_id", "file_id"], keep="last")
 
         idx = start_idx.merge(
-            end_idx, on=["category_id", "file_id"], suffixes=("_start", "_end")
+            end_idx, on=["category_id", "file_id"], suffixes=["_start", "end"]
         )
         return idx
+
+    def find_closest(base_corpus, compare_corpus, by_file_is=True):
+        """
+        Return list of embedding consine similiarity
+        and jensenshannon distance for each Document
+        instance in base_corpus, compared with
+        compared_corpus
+
+        parameters
+        -----------
+        base_corpus: Corpus instance
+            out of sample corpus
+            e.g. A new paragraph
+
+        compare_corpus: Corpus instance
+            Corpus to be compared with
+
+        by_file_id: boolean
+            returnm results by file_id
+
+        returns:
+            list of DataFrames with scores
+        """
+
+        idx = find_corpus_idx(compare_corpus)
+        stats = []
+
+        compare_embed = np.asarray
