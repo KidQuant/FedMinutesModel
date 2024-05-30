@@ -16,16 +16,16 @@ class FedMinScraper(object):
     dates: list('yyyy'|'yyyy-mm')
         List of strings/integers referencing dates for extraction
         Example:
-        dates = [min_year] -> Extracts all transcripts for this min_year
-        dates = [min_year, max_year] -> Extracts transactions for a set of year
+        dates = [min_year] -> Extracts all transcripts for this year
+        dates = [min_year,max_year] -> Extracts transactions for a set of years
         dates = ['2020-01'] -> Extracts transcripts for a single month/year
 
     nthreads: int
-        Set of threads used for mutliprocessing
+        Set of threads used for multiprocessing
         defaults to None
 
     Returns
-    ----------
+    --------
     transcripts: txt files
 
     """
@@ -35,7 +35,7 @@ class FedMinScraper(object):
 
     # historical transcripts are stored differently
     url_historical = r"fomchistorical{}.htm"
-    # each transcripts has a unique address, gathered from url_current or url_historical
+    # each transcript has a unique address, gathered from url_current or url_historical
     url_transcript = r"fomcminutes{}.htm"
     href_regex = re.compile("(?i)/fomc[/]?minutes[/]?\d{8}.htm")
 
@@ -73,16 +73,16 @@ class FedMinScraper(object):
 
         r = requests.get(urljoin(FedMinScraper.url_parent, FedMinScraper.url_current))
         soup = BeautifulSoup(r.text, "lxml")
-        # date are given by yyyymm
+        # dates are given by yyyymmdd
 
-        tdates = soup.find_all("a", href=self.href_regex)
-        tdates = [re.search(r"\d{8}", str(r))[0] for t in tdates]
+        tdates = soup.findAll("a", href=self.href_regex)
+        tdates = [re.search(r"\d{8}", str(t))[0] for t in tdates]
         self.historical_date = int(min(tdates)[:4])
         # find minimum year
 
         # extract all of these and filter
-        # tdates can only be apllied to /fomcminutes
-        # historical dates need to e applied to federalresreve.gov
+        # tdates can only be applied to /fomcminutes
+        # historical dates need to be applied to federalreserve.gov
 
         if self.min_year < self.historical_date:
             # just append the years i'm interested in
@@ -100,6 +100,7 @@ class FedMinScraper(object):
         self.transcript_dates = tdates
 
     def get_transcript(self, transcript_date):
+
         transcript_url = urljoin(
             FedMinScraper.url_parent,
             FedMinScraper.url_transcript.format(transcript_date),
@@ -111,7 +112,7 @@ class FedMinScraper(object):
                 FedMinScraper.url_parent.replace("/monetarypolicy", ""),
                 r"fomc/minutes/{}.htm".format(transcript_date),
             )
-            r = requests.get(transcript_date)
+            r = requests.get(transcript_url)
 
         soup = BeautifulSoup(r.content, "lxml")
         main_text = soup.findAll(name="p")
@@ -119,7 +120,7 @@ class FedMinScraper(object):
         clean_main_text = "\n\n".join(t.text.strip() for t in main_text)
 
         # reduce double spaces to one
-        clean_main_text = re.sub(r" ", r" ", clean_main_text)
+        clean_main_text = re.sub(r"  ", r" ", clean_main_text)
 
         self.transcripts[transcript_date] = clean_main_text
 
@@ -135,13 +136,14 @@ class FedMinScraper(object):
 
         for fname, txt in self.transcripts.items():
             with open(
-                os.path.join(self.save_path + ".txt"), "w", encoding="utf-8"
+                os.path.join(self.save_path, fname + ".txt"), "w", encoding="utf-8"
             ) as o:
                 o.write(txt)
                 o.close()
 
 
 if __name__ == "__main__":
+
     dates = ["2004", "2021"]
     # Assumes run from ipython
     save_path = os.path.join(os.getcwd(), "Minutes")

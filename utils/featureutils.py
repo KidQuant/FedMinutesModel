@@ -1,5 +1,3 @@
-from re import L
-
 import numpy as np
 import pandas as pd
 import torch
@@ -103,7 +101,7 @@ class FeatureProcessor(object):
             topic_pred = [None] * batch_size
 
             feature_tensor = self.transformer_tokenizer(
-                [b.tokens for b in batch], **self.transformer_settings
+                [b.tokens for b in batch], **self.tokenizer_settings
             )
 
             with torch.no_grad():
@@ -197,7 +195,7 @@ class FeatureProcessor(object):
         e_x = np.exp(x - np.max(x, axis=1)[:, None])
         return e_x / np.sum(e_x, axis=1)[:, None]
 
-    def find_corpus_idx(corpus):
+    def find_corpus_idx(self, corpus):
         """
         Extract file_ids positional index in corpus
         """
@@ -208,8 +206,9 @@ class FeatureProcessor(object):
         end_idx = df_ids.drop_duplicates(["category_id", "file_id"], keep="last")
 
         idx = start_idx.merge(
-            end_idx, on=["category_id", "file_id"], suffixes=["_start", "end"]
+            end_idx, on=["category_id", "file_id"], suffixes=("_start", "_end")
         )
+
         return idx
 
     def find_closest(base_corpus, compare_corpus, by_file_is=True):
@@ -238,4 +237,58 @@ class FeatureProcessor(object):
         idx = find_corpus_idx(compare_corpus)
         stats = []
 
-        compare_embed = np.asarray
+        compare_embed = np.asarray(compare_corpus.extract_features("embedding"))
+        compare_topics = np.asarray(
+            [i["topic_dist"] for i in compare_corpus.extract_features("topics")]
+        )
+        compare_sentiment = np.asarray(
+            [
+                i["logits"][0] - i["logits"][1]
+                for i in compare_corpus.extract_features("sentiment")
+            ]
+        )
+
+        for base_doc in base_corpus:
+
+            base_doc_embed = np.asarray(base_doc.features["embedding"])
+            base_doc_topic = base_doc.features["topics"]["topic_dist"]
+            base_doc_sent = base_doc.features["sentiment"]["logits"]
+            base_doc_nt = base_doc_sent[0] - base_doc_sent[-1]
+
+            base_stats = pd.DataFrame()
+
+            for n, df_idx in idx.iterrows():
+
+                start = df_idx["idx_start"]
+                end = df_idx["idx_end"]
+                category_id = df_idx["category_id"]
+                file_id = df_idx["file_id"]
+
+                embed_slice = compare_embed[start:end]
+                topic_slice = compare_topics[start:end]
+                net_tone_slice = compare_sentiment[start:end]
+                raw_text = [i.raw for i in compare_corpus[start:end]]
+
+                cos = cosine_similarity(base_doc_embed.reshape(1, -1), embed_slice)[0]
+                jen_dist = []
+                for t in topic_slice:
+                    jen_dist.append(1 - jensenshannon(base_doc_topic, t))
+
+                df = pd.DataFrame((raw_text, cos, jen_dist, net_tone_slice)).T
+                df.columns = [
+                    "raw_text",
+                    "embed_cos_sim",
+                    "topic_1-jensen_dist",
+                    "net_tone",
+                ]
+                df["category_id"] = category_id
+                df["file_id"] = file_id
+                df["net_tone_diff"] = df["net_tone"] - base_doc_nt
+                base_stats = pd.concat([base_stats, df], axis=0)
+
+            base_stats["combined_score"] = (
+                base_stats["embed_cos_sim"] * base_stats["topic_1-jensen_dist"]
+            )
+
+            stats.append(base_stats)
+        return stats
